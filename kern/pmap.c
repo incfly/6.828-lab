@@ -16,6 +16,10 @@ static size_t npages_basemem;	// Amount of base memory (in pages)
 // These variables are set in mem_init()
 pde_t *kern_pgdir;		// Kernel's initial page directory
 struct PageInfo *pages;		// Physical page state array
+
+//bluesea
+//为初始化的全局静态变量会自动初始化成0. 
+//这是满足page_free_list的初始化要求的
 static struct PageInfo *page_free_list;	// Free list of physical pages
 
 
@@ -98,8 +102,16 @@ boot_alloc(uint32_t n)
 	// to a multiple of PGSIZE.
 	//
 	// LAB 2: Your code here.
+	
+	//bluesea
+	if (n == 0){
+		return nextfree;
+	}
 
-	return NULL;
+	result = nextfree;
+	nextfree += ROUNDUP(n, PGSIZE);
+
+	return result;
 }
 
 // Set up a two-level page table:
@@ -121,11 +133,14 @@ mem_init(void)
 	i386_detect_memory();
 
 	// Remove this line when you're ready to test this function.
-	panic("mem_init: This function is not finished\n");
+	//panic("mem_init: This function is not finished\n");
 
 	//////////////////////////////////////////////////////////////////////
 	// create initial page directory.
 	kern_pgdir = (pde_t *) boot_alloc(PGSIZE);
+
+	//bluesea
+	//这个函数里面挂的。所以还是boot_alloc有问题！
 	memset(kern_pgdir, 0, PGSIZE);
 
 	//////////////////////////////////////////////////////////////////////
@@ -143,7 +158,9 @@ mem_init(void)
 	// each physical page, there is a corresponding struct PageInfo in this
 	// array.  'npages' is the number of physical pages in memory.
 	// Your code goes here:
-
+	// bluesea
+	// fuck! 一直以为pages这个变量已经被初始化了。。。原来还是要自己用boot_alloc分配
+	pages = (struct PageInfo *)boot_alloc(npages * sizeof(struct PageInfo));
 
 	//////////////////////////////////////////////////////////////////////
 	// Now that we've allocated the initial kernel data structures, we set
@@ -214,6 +231,21 @@ mem_init(void)
 	check_page_installed_pgdir();
 }
 
+//bluesea
+//This function is used by page_init
+
+inline void set_page_used(struct PageInfo *pi){
+	pi->pp_ref = 1;
+	pi->pp_link = 0;
+}
+
+inline void set_page_free(struct PageInfo *pi){
+	pi->pp_ref = 0;
+	pi->pp_link = page_free_list;
+	page_free_list = pi;
+}
+
+//
 // --------------------------------------------------------------
 // Tracking of physical pages.
 // The 'pages' array has one 'struct PageInfo' entry per physical page.
@@ -246,11 +278,37 @@ page_init(void)
 	// Change the code to reflect this.
 	// NB: DO NOT actually touch the physical memory corresponding to
 	// free pages!
+	
+
+	//bluesea
+	//注意！
+	//上述注释中说的都是针对物理内存的，因为我们对pages[]中的PageInfo进行初始化，而
+	//PageInfo是描述指定物理地址的页使用情况。
+	//所以需要弄清楚的是：在extended memory上的内核及数据结构占据了哪些物理地址,
+	//而不是虚拟地址。
+	page_free_list = 0;
 	size_t i;
 	for (i = 0; i < npages; i++) {
+		if (i == 0)
+			set_page_used(&pages[i]);
+		else if (i >= 1 && i < npages_basemem)
+			set_page_free(&pages[i]);
+		else if (i >= IOPHYSMEM / PGSIZE && i < EXTPHYSMEM / PGSIZE)
+			set_page_used(&pages[i]);
+
+		//这一段比较蛋疼... 没写的原因是一直不确定kernel除了自身加载进来的4M
+		//以外，还有没有其他的变量占用内存。如PageInfo* pages, kern_pgdir等。
+		//后来才发现，pages需要自己在mem_init()初始化。。。
+		else if (i >= EXTPHYSMEM / PGSIZE && i < 0x400000 / PGSIZE)
+			set_page_used(&pages[i]);
+		else 
+			set_page_free(&pages[i]);
+		
+		/*
 		pages[i].pp_ref = 0;
 		pages[i].pp_link = page_free_list;
 		page_free_list = &pages[i];
+		*/
 	}
 }
 
@@ -267,17 +325,33 @@ struct PageInfo *
 page_alloc(int alloc_flags)
 {
 	// Fill this function in
-	return 0;
+	// bluesea
+	if (page_free_list == NULL)
+		return NULL;
+	struct PageInfo *free = page_free_list;
+
+	//注意: char *p; 不是物理地址，分页都已开启了, 而是free对应的虚拟地址。
+	//获取对应的虚拟地址应该用page2kva, 而非char *p = (char *)free;
+	char *p = page2kva(free);
+	int i = 0;
+	page_free_list = page_free_list->pp_link;
+	if (alloc_flags & ALLOC_ZERO)
+		for ( ; i < PGSIZE; i++)
+			p[i] = '\0';
+	return free;
 }
 
 //
 // Return a page to the free list.
 // (This function should only be called when pp->pp_ref reaches 0.)
-//
+// 所以page_free不需要将pp->pp_ref赋值为0.
 void
 page_free(struct PageInfo *pp)
 {
 	// Fill this function in
+	// bluesea
+	pp->pp_link = page_free_list;
+	page_free_list = pp;
 }
 
 //
@@ -517,6 +591,8 @@ check_page_alloc(void)
 	assert(page2pa(pp2) < npages*PGSIZE);
 
 	// temporarily steal the rest of the free pages
+	// bluesea
+	// 这种测试方法太邪恶了。。。太trick了！
 	fl = page_free_list;
 	page_free_list = 0;
 
