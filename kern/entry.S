@@ -90,6 +90,12 @@ spin:	jmp	spin
 	.p2align	PGSHIFT		# force page alignment
 	.globl		bootstack
 bootstack:
+#bluesea
+#.space NUMBER, fill
+#这条指令的作用是分配NUMBER个bytes, 每个值为fill. 若省去，则为0
+#又因为指令在内存中的排序是从低地址到高地址的。
+#而stack增长的方向是往低地址的，所以在最后的bootstacktop标记地址。
+#作为内核栈的栈顶地址
 	.space		KSTKSIZE
 	.globl		bootstacktop   
 bootstacktop:
