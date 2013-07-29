@@ -369,6 +369,13 @@ page_decref(struct PageInfo* pp)
 // a pointer to the page table entry (PTE) for linear address 'va'.
 // This requires walking the two-level page table structure.
 //
+// bluesea
+// pgdir_walk具体返回的是： 
+// 虚拟地址va, 所在的页面对应的page table 表项的地址，所以是二级页表page table
+// 的表项的地址，而非page dir的表项
+// (理由分析见check_page()中的相关分析)
+// 并且是该地址的虚拟地址！
+//
 // The relevant page table page might not exist yet.
 // If this is true, and create == false, then pgdir_walk returns NULL.
 // Otherwise, pgdir_walk allocates a new page table page with page_alloc.
@@ -377,7 +384,10 @@ page_decref(struct PageInfo* pp)
 //	the page is cleared,
 //	and pgdir_walk returns a pointer into the new page table page.
 //
-// Hint 1: you can turn a Page * into the physical address of the
+//	当然这种情况返回的是?
+//	是否需要填PTE_P? PTE_ADDR等?
+//
+// Hint 1: you can turn a PageInfo * into the physical address of the
 // page it refers to with page2pa() from kern/pmap.h.
 //
 // Hint 2: the x86 MMU checks permission bits in both the page directory
@@ -391,7 +401,24 @@ pte_t *
 pgdir_walk(pde_t *pgdir, const void *va, int create)
 {
 	// Fill this function in
-	return NULL;
+	// bluesea
+	uint32_t pdx = PDX(va), ptx = PTX(va);
+	pde_t *pt = 0; 
+	if (pgdir[pdx] & PTE_P){
+		pt = KADDR(PTE_ADDR(pgdir[pdx]));
+		return &pt[ptx];
+	}
+	if (create == false)
+		return NULL;
+	struct PageInfo *page = page_alloc(ALLOC_ZERO);
+	if (page == NULL)
+		return NULL;
+	page->pp_ref = 1;
+	pgdir[pdx] = pgdir[pdx] | PTE_P;
+	pgdir[pdx] = page2pa(page) | (pgdir[pdx] & 0xfff);
+	pt = page2kva(page);
+	pt[ptx] = pgdir[pdx] & (0xfff & ~PTE_P);//和pgdir[pdx] permission保持一致
+	return &pt[ptx];
 }
 
 //
@@ -408,6 +435,13 @@ static void
 boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)
 {
 	// Fill this function in
+	uintptr_t p = va;
+	for ( ; p < va + size; p += PGSIZE){
+		pde_t *ptep = pgdir_walk(pgdir, (void *)p, 1);
+		assert(ptep);
+		*ptep |= perm | PTE_P;
+		pgdir[PDX(p)] |= *ptep & 0xfff;
+	}
 }
 
 //
@@ -439,6 +473,20 @@ int
 page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
 {
 	// Fill this function in
+	pte_t *ptep = pgdir_walk(pgdir, va, true);
+	if (!ptep)
+		return -E_NO_MEM;
+	//这儿非常trick!
+	//如果va, pp和以前的调用的page_insert相同，且pp->pp_ref++写在page_remove()
+	//下面的话, page_remove()就会把pp放到page_free_list上了
+	//所以必须先ref++,再检测page_remove()
+	pp->pp_ref++;
+	if (*ptep & PTE_P)
+		page_remove(pgdir, va);
+	*ptep = page2pa(pp) | perm | PTE_P;
+	//page directory的权限
+	pgdir[PDX(va)] |= *ptep & 0xfff;
+	tlb_invalidate(pgdir, va);
 	return 0;
 }
 
@@ -457,6 +505,16 @@ struct PageInfo *
 page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)
 {
 	// Fill this function in
+	// bluesea
+	// pgdir_walk只负责返回page table entry, 至于检查PTE_P, present位的职责，
+	// 应该交给page_lookup. (所以pgdir_walk里面的确应该将PTE_P置位为0)
+	pde_t *ptep = pgdir_walk(pgdir, va, false);
+	if (!ptep)
+		return NULL;
+	if (pte_store)
+		*pte_store = ptep;
+	if (*ptep & PTE_P)//只有当PTE_P置位时，才返回PageInfo *
+		return pa2page(PTE_ADDR(*ptep));
 	return NULL;
 }
 
@@ -479,6 +537,14 @@ void
 page_remove(pde_t *pgdir, void *va)
 {
 	// Fill this function in
+	//bluesea
+	struct PageInfo *page = NULL;
+	pte_t *ptep = NULL;
+	if ((page = page_lookup(pgdir, va, &ptep)) != NULL){
+		page_decref(page);
+		*ptep = *ptep & (0xfff & ~PTE_P);
+		tlb_invalidate(pgdir, va);
+	}
 }
 
 //
@@ -765,9 +831,16 @@ check_page(void)
 
 	// pp2 should NOT be on the free list
 	// could happen in ref counts are handled sloppily in page_insert
+	//cprintf("p2: %p, free_list %p, p2 ref: %d", pp2, page_free_list, (int)pp2->pp_ref);
 	assert(!page_alloc(0));
 
 	// check that pgdir_walk returns a pointer to the pte
+	// 从这里也可以推测出pgdir_walk的功能（因为page table entry的歧义: 
+	// 是pointer to page table, 还是pointer of entry in page table)
+	// 给定虚拟地址va, kern_pgdir[PDX(va)]是va二级页表, page table的物理地址。
+	// 再KADDR一下，就成了page table的虚拟地址，即ptep
+	// ptep + PTX(va)即va在page table中的表项的位置，的虚拟地址
+	// 这就是pgdir_walk需要返回的。
 	ptep = (pte_t *) KADDR(PTE_ADDR(kern_pgdir[PDX(PGSIZE)]));
 	assert(pgdir_walk(kern_pgdir, (void*)PGSIZE, 0) == ptep+PTX(PGSIZE));
 
