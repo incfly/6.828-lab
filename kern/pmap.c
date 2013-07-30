@@ -184,6 +184,9 @@ mem_init(void)
 	//      (ie. perm = PTE_U | PTE_P)
 	//    - pages itself -- kernel RW, user NONE
 	// Your code goes here:
+	// 要用ROUNDUP！
+	boot_map_region(kern_pgdir, UPAGES, ROUNDUP(npages * sizeof(struct PageInfo), PGSIZE),
+			PADDR(pages), PTE_U | PTE_P);
 
 	//////////////////////////////////////////////////////////////////////
 	// Use the physical memory that 'bootstack' refers to as the kernel
@@ -196,6 +199,10 @@ mem_init(void)
 	//       overwrite memory.  Known as a "guard page".
 	//     Permissions: kernel RW, user NONE
 	// Your code goes here:
+	boot_map_region(kern_pgdir, KSTACKTOP - KSTKSIZE, KSTKSIZE, 
+			PADDR(bootstack), PTE_P); 
+//	boot_map_region(kern_pgdir, KSTACKTOP - PTSIZE, PTSIZE - KSTKSIZE, 
+//			PADDR(bootstacktop - PTSIZE), ~PTE_P); 
 
 	//////////////////////////////////////////////////////////////////////
 	// Map all of physical memory at KERNBASE.
@@ -205,6 +212,8 @@ mem_init(void)
 	// we just set up the mapping anyway.
 	// Permissions: kernel RW, user NONE
 	// Your code goes here:
+	uint64_t kern_map_length = 0x100000000 - (uint64_t) KERNBASE;
+	boot_map_region(kern_pgdir, KERNBASE, (uint32_t) kern_map_length, 0, PTE_W);
 
 	// Check that the initial page directory has been set up correctly.
 	check_kern_pgdir();
@@ -303,12 +312,6 @@ page_init(void)
 			set_page_used(&pages[i]);
 		else 
 			set_page_free(&pages[i]);
-		
-		/*
-		pages[i].pp_ref = 0;
-		pages[i].pp_link = page_free_list;
-		page_free_list = &pages[i];
-		*/
 	}
 }
 
@@ -376,6 +379,11 @@ page_decref(struct PageInfo* pp)
 // (理由分析见check_page()中的相关分析)
 // 并且是该地址的虚拟地址！
 //
+//
+// 下面这个需求可能和这个想法有矛盾：PTE_P置为0，即缺页的时候本应该由缺页中断处理。
+// 那是另外故事，在这儿，pgdir_walk基本上只用于初始化内核虚拟内存的映射，
+// 所以缺页新alloc page table没什么问题。
+//
 // The relevant page table page might not exist yet.
 // If this is true, and create == false, then pgdir_walk returns NULL.
 // Otherwise, pgdir_walk allocates a new page table page with page_alloc.
@@ -383,9 +391,8 @@ page_decref(struct PageInfo* pp)
 //    - Otherwise, the new page's reference count is incremented,
 //	the page is cleared,
 //	and pgdir_walk returns a pointer into the new page table page.
-//
-//	当然这种情况返回的是?
-//	是否需要填PTE_P? PTE_ADDR等?
+//	(注：这种情况下也是返回页表项的地址，而页目录的地址。页表项的各个FLAG不用管
+//	只需要把页目录对应的位置PTE_P置位即可。)
 //
 // Hint 1: you can turn a PageInfo * into the physical address of the
 // page it refers to with page2pa() from kern/pmap.h.
@@ -403,21 +410,20 @@ pgdir_walk(pde_t *pgdir, const void *va, int create)
 	// Fill this function in
 	// bluesea
 	uint32_t pdx = PDX(va), ptx = PTX(va);
-	pde_t *pt = 0; 
+	pde_t *pt = 0;
 	if (pgdir[pdx] & PTE_P){
 		pt = KADDR(PTE_ADDR(pgdir[pdx]));
 		return &pt[ptx];
 	}
-	if (create == false)
+	if (!create)
 		return NULL;
 	struct PageInfo *page = page_alloc(ALLOC_ZERO);
-	if (page == NULL)
+	if (!page)
 		return NULL;
 	page->pp_ref = 1;
-	pgdir[pdx] = pgdir[pdx] | PTE_P;
-	pgdir[pdx] = page2pa(page) | (pgdir[pdx] & 0xfff);
+	pgdir[pdx] = page2pa(page) | PTE_P | PTE_U;
 	pt = page2kva(page);
-	pt[ptx] = pgdir[pdx] & (0xfff & ~PTE_P);//和pgdir[pdx] permission保持一致
+	pt[ptx] = PTE_U;
 	return &pt[ptx];
 }
 
@@ -435,12 +441,15 @@ static void
 boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)
 {
 	// Fill this function in
-	uintptr_t p = va;
-	for ( ; p < va + size; p += PGSIZE){
-		pde_t *ptep = pgdir_walk(pgdir, (void *)p, 1);
+	va &= ~0xfff;
+	pa &= ~0xfff;
+	//注意判断条件：KERNBASE + 1G 会溢出uint32_t！
+	for ( ; size != 0; va += PGSIZE, pa += PGSIZE, size -= PGSIZE){
+		pde_t *ptep = pgdir_walk(pgdir, (void *)va, true);
 		assert(ptep);
-		*ptep |= perm | PTE_P;
-		pgdir[PDX(p)] |= *ptep & 0xfff;
+		*ptep = pa | perm | PTE_P;
+		//可能通过boot_map_region改变权限, 所以pgdir表项需要做相应调整
+		pgdir[PDX(va)] |= perm | PTE_P;
 	}
 }
 
@@ -724,10 +733,11 @@ check_kern_pgdir(void)
 	for (i = 0; i < n; i += PGSIZE)
 		assert(check_va2pa(pgdir, UPAGES + i) == PADDR(pages) + i);
 
-
 	// check phys mem
-	for (i = 0; i < npages * PGSIZE; i += PGSIZE)
+	for (i = 0; i < npages * PGSIZE; i += PGSIZE){
+		uint32_t temp = check_va2pa(pgdir, KERNBASE + i);
 		assert(check_va2pa(pgdir, KERNBASE + i) == i);
+	}
 
 	// check kernel stack
 	for (i = 0; i < KSTKSIZE; i += PGSIZE)
