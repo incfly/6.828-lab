@@ -172,6 +172,9 @@ extern volatile pde_t uvpd[];     // VA of current page directory
  * You can map a struct PageInfo * to the corresponding physical address
  * with page2pa() in kern/pmap.h.
  */
+//bluesea
+//PageInfo不是页表项，也不属于某个进程。而是用于记录整个physical memory page的
+//状况。每一个PageInfo项对应的物理地址由它在pages[]中的位置决定。见page2pa()
 struct PageInfo {
 	// Next page on the free list.
 	struct PageInfo *pp_link;

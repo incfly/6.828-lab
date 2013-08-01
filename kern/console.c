@@ -192,6 +192,10 @@ cga_putc(int c)
 	}
 
 	// What is the purpose of this?
+	// bluesea
+	// 当所写的内容超出屏幕大小的话(80*25)，把所有的内容上移一行
+	// 这由memmove完成
+	// 并且，最后一行打印空格以清理。
 	if (crt_pos >= CRT_SIZE) {
 		int i;
 
