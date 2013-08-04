@@ -64,12 +64,15 @@ void
 trap_init(void)
 {
 	extern struct Segdesc gdt[];
-	int dpl = 0, type = 1, i;
-	for (i = 0; i <= 16; i++)
-		SETGATE(idt[i], type, GD_KT, handlers[i], dpl);
 
 	// LAB 3: Your code here.
-	// 为什么DPL = 0?
+	// 为什么DPL = 0? 比如page fault, 发生在kernel/user mode都有可能
+	int dpl = 0, type = 1, i;
+	for (i = 0; i <= 48; i++)
+		SETGATE(idt[i], type, GD_KT, handlers[i], dpl);
+	//真不知道他们怎么知道DEBUG的DPL又应该是3.
+	SETGATE(idt[3], type, GD_KT, handlers[3], 3);
+	SETGATE(idt[T_SYSCALL], 0, GD_KT, handlers[T_SYSCALL], 3);
 
 	// Per-CPU setup 
 	trap_init_percpu();
@@ -148,6 +151,25 @@ trap_dispatch(struct Trapframe *tf)
 {
 	// Handle processor exceptions.
 	// LAB 3: Your code here.
+	if (tf->tf_trapno == T_PGFLT){
+		page_fault_handler(tf);
+		return;
+	}
+	if (tf->tf_trapno == T_BRKPT){
+		monitor(tf);
+		return;
+	}
+	if (tf->tf_trapno == T_SYSCALL){
+		int retval= 
+			syscall(tf->tf_regs.reg_eax, 
+				tf->tf_regs.reg_edx,
+				tf->tf_regs.reg_ecx,
+				tf->tf_regs.reg_ebx,
+				tf->tf_regs.reg_edi,
+				tf->tf_regs.reg_esi);
+		tf->tf_regs.reg_eax = retval;
+		return;
+	}
 
 	// Unexpected trap: The user process or the kernel has a bug.
 	print_trapframe(tf);
@@ -209,6 +231,8 @@ page_fault_handler(struct Trapframe *tf)
 	// Handle kernel-mode page faults.
 
 	// LAB 3: Your code here.
+	if ((tf->tf_cs & 3) != 3)
+		panic("page fault occur in kernel.");
 
 	// We've already handled kernel-mode exceptions, so if we get here,
 	// the page fault happened in user mode.

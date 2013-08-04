@@ -13,7 +13,12 @@ libmain(int argc, char **argv)
 {
 	// set thisenv to point at our Env structure in envs[].
 	// LAB 3: Your code here.
-	thisenv = 0;
+	//
+	// envs变量在lib/entry.S中已经被设置为指向virtual mem中的ENVS.
+	// 即envs数组的起始地址。(pmap.c中如此映射的)
+	// sys_getenvid()获取envid。而envid中的后10位刚好是该Env在
+	// envs数组中的index. 用ENVS()宏即可获得index.
+	thisenv = (struct Env *)envs + ENVX(sys_getenvid());
 
 	// save the name of the program so that panic() can use it
 	if (argc > 0)

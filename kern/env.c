@@ -364,12 +364,8 @@ load_icode(struct Env *e, uint8_t *binary, size_t size)
 		//allocate and map, region_alloc() should work under env's pgidr.
 		//as mapping above UTOP(=UENV) are all the same for different process.
 		region_alloc(e, (void *)ph->p_va, ph->p_memsz);
-		content = ph->p_offset + (char *)binary;
-		for (start = (char *)ph->p_va; start < (char *)(ph->p_va + ph->p_filesz);
-				start++, content++)
-				*start = *content;
-		for ( ; start < (char *)(ph->p_va + ph->p_memsz); start++)
-			*start = '\0';
+		memmove((void *)ph->p_va, (char *)binary + ph->p_offset, ph->p_filesz);
+		memset((void *)(ph->p_va + ph->p_filesz), 0, ph->p_memsz - ph->p_filesz);
 	}
 	lcr3(PADDR(kern_pgdir));
 

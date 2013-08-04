@@ -609,7 +609,28 @@ int
 user_mem_check(struct Env *env, const void *va, size_t len, int perm)
 {
 	// LAB 3: Your code here.
-
+	// 这个地方和grade有点关：
+	// 必须找到第一个错误的地址，而不仅仅是判断是否权限允许访问。
+	// 所以ia = ROUNDDOWN(va, PGSIZE)，va所在页无权限的话，就会出错。
+	// PGSIZE为步长的增加有点麻烦. 要考虑到第一次ROUNDDOWN()的话
+	// 出错，但user_mem_check_addr要赋值为va.
+	uint32_t ia = (uint32_t)va;
+	perm |= PTE_P;
+	for ( ; ia < (uint32_t)va + len; ia++){
+		if (ia > ULIM){
+			user_mem_check_addr = ia;
+			return -E_FAULT;
+		}
+		pte_t *ptep = pgdir_walk(env->env_pgdir, (void *)ia, 0);
+		if (!ptep){
+			user_mem_check_addr = ia;
+			return -E_FAULT;
+		}
+		if ((*ptep & perm) != perm){
+			user_mem_check_addr = ia;
+			return -E_FAULT;
+		}
+	}
 	return 0;
 }
 
