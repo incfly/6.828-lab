@@ -215,8 +215,9 @@ mem_init(void)
 	//       overwrite memory.  Known as a "guard page".
 	//     Permissions: kernel RW, user NONE
 	// Your code goes here:
+	// 这个地方需要PTE_W|PTE_P！之前少了PTE_W，到lab 3, environment就挂了啊
 	boot_map_region(kern_pgdir, KSTACKTOP - KSTKSIZE, KSTKSIZE, 
-			PADDR(bootstack), PTE_P); 
+			PADDR(bootstack), PTE_W|PTE_P); 
 //	boot_map_region(kern_pgdir, KSTACKTOP - PTSIZE, PTSIZE - KSTKSIZE, 
 //			PADDR(bootstacktop - PTSIZE), ~PTE_P); 
 
@@ -229,7 +230,7 @@ mem_init(void)
 	// Permissions: kernel RW, user NONE
 	// Your code goes here:
 	uint64_t kern_map_length = 0x100000000 - (uint64_t) KERNBASE;
-	boot_map_region(kern_pgdir, KERNBASE, (uint32_t) kern_map_length, 0, PTE_W);
+	boot_map_region(kern_pgdir, KERNBASE, (uint32_t) kern_map_length, 0, PTE_W|PTE_P);
 
 	// Check that the initial page directory has been set up correctly.
 	check_kern_pgdir();
@@ -439,7 +440,7 @@ pgdir_walk(pde_t *pgdir, const void *va, int create)
 	page->pp_ref = 1;
 	pgdir[pdx] = page2pa(page) | PTE_P | PTE_U;
 	pt = page2kva(page);
-	pt[ptx] = PTE_U;
+	//pt[ptx] = PTE_U;
 	return &pt[ptx];
 }
 
@@ -608,7 +609,28 @@ int
 user_mem_check(struct Env *env, const void *va, size_t len, int perm)
 {
 	// LAB 3: Your code here.
-
+	// 这个地方和grade有点关：
+	// 必须找到第一个错误的地址，而不仅仅是判断是否权限允许访问。
+	// 所以ia = ROUNDDOWN(va, PGSIZE)，va所在页无权限的话，就会出错。
+	// PGSIZE为步长的增加有点麻烦. 要考虑到第一次ROUNDDOWN()的话
+	// 出错，但user_mem_check_addr要赋值为va.
+	uint32_t ia = (uint32_t)va;
+	perm |= PTE_P;
+	for ( ; ia < (uint32_t)va + len; ia++){
+		if (ia > ULIM){
+			user_mem_check_addr = ia;
+			return -E_FAULT;
+		}
+		pte_t *ptep = pgdir_walk(env->env_pgdir, (void *)ia, 0);
+		if (!ptep){
+			user_mem_check_addr = ia;
+			return -E_FAULT;
+		}
+		if ((*ptep & perm) != perm){
+			user_mem_check_addr = ia;
+			return -E_FAULT;
+		}
+	}
 	return 0;
 }
 
