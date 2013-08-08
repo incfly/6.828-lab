@@ -524,12 +524,14 @@ env_run(struct Env *e)
 	//	e->env_tf to sensible values.
 
 	// LAB 3: Your code here.
-	if (curenv)
-		curenv->env_status = ENV_RUNNABLE;
-	curenv = e;
-	curenv->env_status = ENV_RUNNING;
-	curenv->env_runs++;
-	lcr3(PADDR(curenv->env_pgdir));
+	if (curenv != e){
+		if (curenv)
+			curenv->env_status = ENV_RUNNABLE;
+		curenv = e;
+		curenv->env_status = ENV_RUNNING;
+		curenv->env_runs++;
+		lcr3(PADDR(curenv->env_pgdir));
+	}
 //	cprintf("entry eip: %x\n", curenv->env_tf.tf_eip);
 	//这儿挂了！！！！可能是trapframe的问题，也有可能是load, mapping的问题~
 	env_pop_tf(&curenv->env_tf);
