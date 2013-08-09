@@ -39,6 +39,10 @@
 #define PGOFF(la)	(((uintptr_t) (la)) & 0xFFF)
 
 // construct linear address from indexes and offset
+// bluesea
+// 指的是，已知在Page Dirctory, Page Table中的地址，offset，获取线性地址
+// 并非是，读取page table/directory entry的前20位的值，获取真实的物理地址。
+// 读取entry：PTE_ADDR(la)。
 #define PGADDR(d, t, o)	((void*) ((d) << PDXSHIFT | (t) << PTXSHIFT | (o)))
 
 // Page directory and page table constants.
@@ -73,6 +77,8 @@
 #define PTE_SYSCALL	(PTE_AVAIL | PTE_P | PTE_W | PTE_U)
 
 // Address in page table or page directory entry
+// 注意，Page table entry前20位的地址是物理地址，不是虚拟地址！
+// 不然就陷入了循环求物理地址的过程了. -,-
 #define PTE_ADDR(pte)	((physaddr_t) (pte) & ~0xFFF)
 
 // Control Register flags
