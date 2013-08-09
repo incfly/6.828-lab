@@ -74,13 +74,12 @@ trap_init(void)
 
 	// LAB 3: Your code here.
 	// 为什么DPL = 0? 比如page fault, 发生在kernel/user mode都有可能
-	int dpl = 0, type = 1, i;
+	int dpl = 0, type = 0, i;
 	for (i = 0; i <= 48; i++)
 		SETGATE(idt[i], type, GD_KT, handlers[i], dpl);
 	//真不知道他们怎么知道DEBUG的DPL又应该是3.
-	SETGATE(idt[3], type, GD_KT, handlers[3], 3);
-	SETGATE(idt[T_SYSCALL], 0, GD_KT, handlers[T_SYSCALL], 3);
-
+	SETGATE(idt[3], 1, GD_KT, handlers[3], 3);
+	SETGATE(idt[T_SYSCALL], 1, GD_KT, handlers[T_SYSCALL], 3);
 	// Per-CPU setup 
 	trap_init_percpu();
 }
@@ -111,22 +110,26 @@ trap_init_percpu(void)
 	// user space on that CPU.
 	//
 	// LAB 4: Your code here:
+	uint32_t i = thiscpu->cpu_id;
+	thiscpu->cpu_ts.ts_esp0 = KSTACKTOP - i * (KSTKSIZE + KSTKGAP);
+	thiscpu->cpu_ts.ts_ss0 = GD_KD;
 
-	// Setup a TSS so that we get the right stack
-	// when we trap to the kernel.
-	ts.ts_esp0 = KSTACKTOP;
-	ts.ts_ss0 = GD_KD;
+	//gdt, >> 3的原因是，每个gdt的表项是8字节
+	//GD_KT     0x08     // kernel text
+	//GD_KD     0x10     // kernel data
+	//GD_UT     0x18     // user text
+	//GD_UD     0x20     // user data
+	//GD_TSS0   0x28     // Task segment selector for CPU 0
+	//注意0x28，是16进制！
+	//结合gdt[ ] 的定义，GD_TSS0接下来的位置就是存放cpui的GD_TSS
 
-	// Initialize the TSS slot of the gdt.
-	gdt[GD_TSS0 >> 3] = SEG16(STS_T32A, (uint32_t) (&ts),
-					sizeof(struct Taskstate), 0);
-	gdt[GD_TSS0 >> 3].sd_s = 0;
-
-	// Load the TSS selector (like other segment selectors, the
-	// bottom three bits are special; we leave them 0)
-	ltr(GD_TSS0);
-
-	// Load the IDT
+	gdt[(GD_TSS0 >> 3) + i] = SEG16(STS_T32A, (uint32_t)&thiscpu->cpu_ts,
+						sizeof(struct Taskstate), 0);
+	gdt[(GD_TSS0 >> 3) + i].sd_s = 0;
+	//ltr(GD_TSS0 + i * sizeof(struct Segdesc));
+	//和下面一句是等效的，sizeof(struct Segdesc)就等于8.
+	//(Segdesc里的unsigned 是unsigned char，1个字节)
+	ltr(GD_TSS0 + (i << 3) );
 	lidt(&idt_pd);
 }
 
@@ -240,6 +243,7 @@ trap(struct Trapframe *tf)
 	// sched_yield()
 	if (xchg(&thiscpu->cpu_status, CPU_STARTED) == CPU_HALTED)
 		lock_kernel();
+
 	// Check that interrupts are disabled.  If this assertion
 	// fails, DO NOT be tempted to fix it by inserting a "cli" in
 	// the interrupt path.
@@ -250,6 +254,7 @@ trap(struct Trapframe *tf)
 		// Acquire the big kernel lock before doing any
 		// serious kernel work.
 		// LAB 4: Your code here.
+		lock_kernel();
 		assert(curenv);
 
 		// Garbage collect if current enviroment is a zombie

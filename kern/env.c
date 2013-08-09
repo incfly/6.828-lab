@@ -124,6 +124,7 @@ env_init(void)
 	int i;
 	for (i = NENV - 1 ; i >= 0; i--){
 		envs[i].env_link = env_free_list;
+		envs[i].env_status = ENV_FREE;
 		env_free_list = &envs[i];
 	}
 	// Per-CPU part of the initialization
@@ -196,9 +197,12 @@ env_setup_vm(struct Env *e)
 
 	// LAB 3: Your code here.
 	p->pp_ref++;
-	e->env_pgdir = page2kva(p);
 	//直接复制kern_pgdir UTOP以上部分的page directory entry即可
-	for (i = PDX(UTOP); i < PGSIZE; i++)
+	e->env_pgdir = page2kva(p);
+	//坑！！！这儿写成了i < PGSIZE，导致第二个envs[1]的page directory
+	//初始化时会overwrite envs[0]的页目录, 这个bug找了好久...
+	//for (i = PDX(UTOP); i < PGSIZE; i++)
+	for (i = PDX(UTOP); i < NPDENTRIES; i++)
 		e->env_pgdir[i] = kern_pgdir[i];
 
 	// UVPT maps the env's own page table read-only.
@@ -554,12 +558,15 @@ env_run(struct Env *e)
 		if (curenv)
 			curenv->env_status = ENV_RUNNABLE;
 		curenv = e;
+		curenv->env_cpunum = cpunum();
 		curenv->env_status = ENV_RUNNING;
 		curenv->env_runs++;
 		lcr3(PADDR(curenv->env_pgdir));
 	}
-//	cprintf("entry eip: %x\n", curenv->env_tf.tf_eip);
+	//cprintf("entry eip: %x\n", curenv->env_tf.tf_eip);
 	//这儿挂了！！！！可能是trapframe的问题，也有可能是load, mapping的问题~
+	//cprintf("in env_run-------------env id: %d, cpuid %d\n", ENVX(e->env_id), thiscpu->cpu_id);
+	unlock_kernel();
 	env_pop_tf(&curenv->env_tf);
 	panic("env_run not yet implemented");
 }

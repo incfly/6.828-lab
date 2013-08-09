@@ -284,7 +284,16 @@ mem_init_mp(void)
 	//     Permissions: kernel RW, user NONE
 	//
 	// LAB 4: Your code here:
-
+	// 注意，虽然mem_init()在lab3中已经对kernel stack进行mapping
+	// 但不能认为cpu0就不需要在这儿mapping了。一则不知道BSP就一定是cpu0
+	// 二则，现在统一使用percpu_kstacks[i]作为cpui的栈(从check_kern_pgdir()对
+	// cpu kernel stack的assert也可以看出)
+	uint32_t i = 0, stki;
+	for ( ; i < NCPU; i++){
+		stki = KSTACKTOP - i*(KSTKSIZE + KSTKGAP) - KSTKSIZE;
+		boot_map_region(kern_pgdir, stki, KSTKSIZE, 
+				PADDR(percpu_kstacks[i]), PTE_W|PTE_P);
+	}
 }
 
 //bluesea
@@ -347,9 +356,9 @@ page_init(void)
 	//所以需要弄清楚的是：在extended memory上的内核及数据结构占据了哪些物理地址,
 	//而不是虚拟地址。
 	page_free_list = 0;
-	size_t i;
+	size_t i, mpentry = MPENTRY_PADDR/PGSIZE;
 	for (i = 0; i < npages; i++) {
-		if (i == 0)
+		if (i == 0 || i == mpentry)
 			set_page_used(&pages[i]);
 		else if (i >= 1 && i < npages_basemem)
 			set_page_free(&pages[i]);
@@ -651,7 +660,14 @@ mmio_map_region(physaddr_t pa, size_t size)
 	// Hint: The staff solution uses boot_map_region.
 	//
 	// Your code here:
-	panic("mmio_map_region not implemented");
+	size = ROUNDUP(size, PGSIZE);
+	if (base + size > MMIOLIM)
+		panic("overflow MMIOLIM\n");
+	boot_map_region(kern_pgdir, base, size, pa, PTE_P|PTE_W|PTE_PCD|PTE_PWT);
+	uintptr_t retaddr = base;
+	base += size;
+	return (void *)retaddr;
+	//panic("mmio_map_region not implemented");
 }
 
 static uintptr_t user_mem_check_addr;
