@@ -78,7 +78,7 @@ trap_init(void)
 	for (i = 0; i <= 48; i++)
 		SETGATE(idt[i], type, GD_KT, handlers[i], dpl);
 	//真不知道他们怎么知道DEBUG的DPL又应该是3.
-	SETGATE(idt[3], 1, GD_KT, handlers[3], 3);
+	SETGATE(idt[T_BRKPT], 1, GD_KT, handlers[T_BRKPT], 3);
 	SETGATE(idt[T_SYSCALL], 1, GD_KT, handlers[T_SYSCALL], 3);
 	// Per-CPU setup 
 	trap_init_percpu();

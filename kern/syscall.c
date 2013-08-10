@@ -92,7 +92,23 @@ sys_exofork(void)
 	// will appear to return 0.
 
 	// LAB 4: Your code here.
-	panic("sys_exofork not implemented");
+	struct Env *e;
+	int r;
+	//SYS_exofork()关键点：parent return child envid，child返回0
+	//这是因为，user/dumbfork程序可以看出：parent exofork()之后，copy
+	//page, set status -> runnable, 调用sched_yield()。在sched_yield()中
+	//child被选中，用env_run()执行,tf.eax发挥作用。所以child不是从这下面的
+	//sys_exofork()->return -> syscall() -> trap_dispatch() ->trap的
+	//这条路径返回的。（这条路径上的trap_dispatch()有对tf.eax的更改)
+	//同时register set保存的eip是指向user mode下的代码位置(trapframe里的就是)
+	//所以child也不是从这儿执行
+	if ( (r= env_alloc(&e, curenv->env_id)) < 0)
+		return -E_NO_FREE_ENV;
+	e->env_status = ENV_NOT_RUNNABLE;
+	e->env_tf = curenv->env_tf;
+	//确保child被调度返回(env_run)的时候，eax，pop为0.
+	e->env_tf.tf_regs.reg_eax = 0;
+	return e->env_id;
 }
 
 // Set envid's env_status to status, which must be ENV_RUNNABLE
@@ -110,9 +126,19 @@ sys_env_set_status(envid_t envid, int status)
 	// You should set envid2env's third argument to 1, which will
 	// check whether the current environment has permission to set
 	// envid's status.
+	// 言下之意，只有一个进程的父进程才能用sys_env_set_status()
+	// 设置进程envid的状态
 
 	// LAB 4: Your code here.
-	panic("sys_env_set_status not implemented");
+	struct Env *e;
+
+	if (status != ENV_RUNNABLE && status != ENV_NOT_RUNNABLE)
+		return -E_INVAL;
+	if( envid2env(envid, &e, 1))
+		return -E_BAD_ENV;
+	e->env_status = status;
+	return 0;
+	//panic("sys_env_set_status not implemented");
 }
 
 // Set the page fault upcall for 'envid' by modifying the corresponding struct
@@ -157,7 +183,32 @@ sys_page_alloc(envid_t envid, void *va, int perm)
 	//   allocated!
 
 	// LAB 4: Your code here.
-	panic("sys_page_alloc not implemented");
+	if ((uint32_t)va >= UTOP || (uint32_t)va % PGSIZE){
+		cprintf("sys_page_alloc, case 1\n");
+		return -E_INVAL;
+	}
+	if (!((perm & PTE_U) && (perm & PTE_P))){
+		cprintf("sys_page_alloc, case 2\n");
+		return -E_INVAL;
+	}
+	int pcheck = ~(PTE_U | PTE_P | PTE_W | PTE_AVAIL);
+	if (perm & pcheck){
+		cprintf("sys_page_alloc, case 3\n");
+		return -E_INVAL;
+	}
+	struct PageInfo *page = page_alloc(ALLOC_ZERO);
+	if (!page)
+		return -E_NO_MEM;
+	struct Env *e;
+	if (envid2env(envid, &e, 1) < 0){
+		cprintf("sys_page_alloc, case 4\n");
+		return -E_INVAL;
+	}
+	if (page_insert(e->env_pgdir, page, va, perm) < 0){
+		page_free(page);
+		return -E_NO_MEM;
+	}
+	return 0;
 }
 
 // Map the page of memory at 'srcva' in srcenvid's address space
@@ -169,6 +220,7 @@ sys_page_alloc(envid_t envid, void *va, int perm)
 // Return 0 on success, < 0 on error.  Errors are:
 //	-E_BAD_ENV if srcenvid and/or dstenvid doesn't currently exist,
 //		or the caller doesn't have permission to change one of them.
+//		言下之意，caller必须对两个都有更改的权限
 //	-E_INVAL if srcva >= UTOP or srcva is not page-aligned,
 //		or dstva >= UTOP or dstva is not page-aligned.
 //	-E_INVAL is srcva is not mapped in srcenvid's address space.
@@ -188,7 +240,18 @@ sys_page_map(envid_t srcenvid, void *srcva,
 	//   check the current permissions on the page.
 
 	// LAB 4: Your code here.
-	panic("sys_page_map not implemented");
+	struct Env *se, *de;
+	if (envid2env(srcenvid, &se, 1) < 0 || envid2env(dstenvid, &de, 1) < 0)
+		return -E_BAD_ENV;
+	if ((uint32_t)srcva >= UTOP || (uint32_t)srcva % PGSIZE 
+			|| (uint32_t)dstva >= UTOP || (uint32_t)dstva % PGSIZE)
+		return -E_INVAL;
+	struct PageInfo *page = page_lookup(se->env_pgdir, srcva, 0);
+	if (!page)
+		return -E_INVAL;
+	if (page_insert(de->env_pgdir, page, dstva, perm) < 0)
+		return -E_NO_MEM;
+	return 0;
 }
 
 // Unmap the page of memory at 'va' in the address space of 'envid'.
@@ -204,7 +267,14 @@ sys_page_unmap(envid_t envid, void *va)
 	// Hint: This function is a wrapper around page_remove().
 
 	// LAB 4: Your code here.
-	panic("sys_page_unmap not implemented");
+	struct Env *e;
+	if  (envid2env(envid, &e, 1) < 0)
+		return -E_BAD_ENV;
+	if ((uint32_t)va >= UTOP || (uint32_t)va % PGSIZE)
+		return -E_INVAL;
+	//不需处理va unmapped的情况
+	page_remove(e->env_pgdir, va);
+	return 0;
 }
 
 // Try to send 'value' to the target env 'envid'.
@@ -296,6 +366,21 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 			break;
 		case SYS_yield:
 			sys_yield();
+			break;
+		case SYS_exofork:
+			retval = sys_exofork();
+			break;
+		case SYS_env_set_status:
+			retval = sys_env_set_status(a1, a2);
+			break;
+		case SYS_page_map:
+			retval = sys_page_map(a1, (void *)a2, a3, (void *)a4, a5);
+			break;
+		case SYS_page_unmap:
+			retval = sys_page_unmap(a1, (void *)a2);
+			break;
+		case SYS_page_alloc:
+			retval = sys_page_alloc(a1, (void *)a2, a3);
 			break;
 		default:
 			return -E_INVAL; 

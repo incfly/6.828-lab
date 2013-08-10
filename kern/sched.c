@@ -84,6 +84,10 @@ sched_halt(void)
 	unlock_kernel();
 
 	// Reset stack pointer, enable interrupts and then halt.
+	// 就是因为下面这儿把interrupt enable了，导致后来timer interrupt
+	// unhandled,出问题。2011版的没有sched_halt(),而是一个idle进程，似乎
+	// 没有这个问题。暂时性解决：屏蔽这句，然后在上面写一个for(;;);的
+	// 无限循环
 	asm volatile (
 		"movl $0, %%ebp\n"
 		"movl %0, %%esp\n"
