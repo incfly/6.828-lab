@@ -335,11 +335,53 @@ page_fault_handler(struct Trapframe *tf)
 	//   (the 'tf' variable points at 'curenv->env_tf').
 
 	// LAB 4: Your code here.
+	// 这里面说的trap-time指的都是发生page fault的时候，而不是说进入pg fault
+	// handler之后的状态
 
-	// Destroy the environment that caused the fault.
-	cprintf("[%08x] user fault va %08x ip %08x\n",
-		curenv->env_id, fault_va, tf->tf_eip);
-	print_trapframe(tf);
-	env_destroy(curenv);
+	assert(curenv);
+	struct UTrapframe uframe;
+	//env_alloc()中,初始化env_pgfault_upcall为0
+	if (!curenv->env_pgfault_upcall){
+		// Destroy the environment that caused the fault.
+		cprintf("[%08x] user fault va %08x ip %08x\n",
+				curenv->env_id, fault_va, tf->tf_eip);
+		print_trapframe(tf);
+		env_destroy(curenv);
+		return;
+	}
+	//UXSTACKTOP栈的建立是由user program负责,用sys_page_map()等syscall
+	//分配映射,此处之需要检查权限即可
+	user_mem_assert(curenv, (void *)(UXSTACKTOP - PGSIZE), PGSIZE, PTE_W);
+
+	//exception stack下面有一guard page, 所以已经overflow的话，会有protection
+	//exception，无需考虑。关键是:check我们之后如果push UTrapframe + 空余的32放ret addr
+	//后，会不会stack overflow, 如是则UXSTACK空间不够，则退出environment.
+	//注意stack的增长方向: 地址是高 -> 低
+	if (tf->tf_esp < UXSTACKTOP && tf->tf_esp >= UXSTACKTOP - PGSIZE &&
+		(tf->tf_esp - sizeof(struct UTrapframe) -  4) < UXSTACKTOP - PGSIZE){
+		print_trapframe(tf);
+		env_destroy(curenv);
+		return;
+	}
+
+	//设置uframe的值. 注意curenv->tf在kernel stack上，uframe将要在UXSTACK上
+	uframe.utf_eflags = tf->tf_eflags;
+	uframe.utf_eip = tf->tf_eip;
+	uframe.utf_err = tf->tf_err;
+	uframe.utf_esp = tf->tf_esp;
+	uframe.utf_regs = tf->tf_regs;
+	uframe.utf_fault_va = fault_va;
+
+	uintptr_t ufp;
+	//recursive page fault, push empty 32-bit word, leaving for ret addr
+	if (tf->tf_esp < UXSTACKTOP && tf->tf_esp >= UXSTACKTOP - PGSIZE)
+		ufp = (uintptr_t) tf->tf_esp - 4 - sizeof(struct UTrapframe);
+	else 
+		ufp = UXSTACKTOP - sizeof(struct UTrapframe);
+
+	*((struct UTrapframe *)ufp) = uframe;
+	tf->tf_eip = (uintptr_t) curenv->env_pgfault_upcall;
+	tf->tf_esp = ufp;
+	env_run(curenv);
 }
 
