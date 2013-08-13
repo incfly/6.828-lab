@@ -328,11 +328,72 @@ page_fault_handler(struct Trapframe *tf)
 	// Note that the grade script assumes you will first check for the page
 	// fault upcall and print the "user fault va" message below if there is
 	// none.  The remaining three checks can be combined into a single test.
+	/*
+	 * 太傻逼了。。就是因为最后的这个要求，我自己写的等价的代码不能通过test。
+	 * 但效果是一样的。为了追求满分，把代码做了相应调整。。。原来的代码放在
+	 * 下面的page_fault_handler_hjf(). */
+
 	//
 	// Hints:
 	//   user_mem_assert() and env_run() are useful here.
 	//   To change what the user environment runs, modify 'curenv->env_tf'
 	//   (the 'tf' variable points at 'curenv->env_tf').
+
+	// LAB 4: Your code here.
+	// 这里面说的trap-time指的都是发生page fault的时候，而不是说进入pg fault
+	// handler之后的状态
+
+	assert(curenv);
+	struct UTrapframe uframe;
+	uintptr_t ufp;
+	bool bad_case = false;
+
+	//env_alloc()中,初始化env_pgfault_upcall为0
+	if (!curenv->env_pgfault_upcall){
+		bad_case = true;
+		cprintf("[%08x] user fault va %08x ip %08x\n",
+				curenv->env_id, fault_va, tf->tf_eip);
+		print_trapframe(tf);
+		env_destroy(curenv);
+	}
+
+	//UXSTACKTOP栈的建立是由user program负责,用sys_page_map()等syscall
+	if (tf->tf_esp < UXSTACKTOP && tf->tf_esp >= UXSTACKTOP - PGSIZE)
+	//recursive page fault, push empty 32-bit word, leaving for ret addr
+		ufp = tf->tf_esp - sizeof(struct UTrapframe) -4;
+	else
+		ufp = UXSTACKTOP - sizeof(struct UTrapframe);
+	user_mem_assert(curenv, (void *)ufp, sizeof(struct UTrapframe), PTE_W);
+
+	//设置uframe的值. 注意curenv->tf在kernel stack上，uframe将要在UXSTACK上
+	uframe.utf_eflags = tf->tf_eflags;
+	uframe.utf_eip = tf->tf_eip;
+	uframe.utf_err = tf->tf_err;
+	uframe.utf_esp = tf->tf_esp;
+	uframe.utf_regs = tf->tf_regs;
+	uframe.utf_fault_va = fault_va;
+
+	*((struct UTrapframe *)ufp) = uframe;
+	tf->tf_eip = (uintptr_t) curenv->env_pgfault_upcall;
+	tf->tf_esp = ufp;
+	env_run(curenv);
+}
+
+
+// 原来的代码，虽然能够完成同样的功能，处理好page_fault(), user mode handler.
+// 但由于处理流程上和标准输出有所出入，于是悲催地放到这儿，被命名为_hjf()...
+void
+page_fault_handler_hjf(struct Trapframe *tf)
+{
+	uint32_t fault_va;
+
+	fault_va = rcr2();
+
+	// Handle kernel-mode page faults.
+
+	// LAB 3: Your code here.
+	if ((tf->tf_cs & 3) != 3)
+		panic("page fault occur in kernel.");
 
 	// LAB 4: Your code here.
 	// 这里面说的trap-time指的都是发生page fault的时候，而不是说进入pg fault

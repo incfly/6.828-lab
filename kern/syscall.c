@@ -250,11 +250,15 @@ sys_page_map(envid_t srcenvid, void *srcva,
 	if (envid2env(srcenvid, &se, 1) < 0 || envid2env(dstenvid, &de, 1) < 0)
 		return -E_BAD_ENV;
 	if ((uint32_t)srcva >= UTOP || (uint32_t)srcva % PGSIZE 
-			|| (uint32_t)dstva >= UTOP || (uint32_t)dstva % PGSIZE)
+			|| (uint32_t)dstva >= UTOP || (uint32_t)dstva % PGSIZE){
+		cprintf("above UTOP in sys_page_map, srcva %p, dstva %p\n",srcva, dstva);
 		return -E_INVAL;
+	}
 	struct PageInfo *page = page_lookup(se->env_pgdir, srcva, 0);
-	if (!page)
+	if (!page){
+		cprintf("above UTOP in sys_page_map\n");
 		return -E_INVAL;
+	}
 	if (page_insert(de->env_pgdir, page, dstva, perm) < 0)
 		return -E_NO_MEM;
 	return 0;
