@@ -78,8 +78,10 @@ trap_init(void)
 	for (i = 0; i <= 48; i++)
 		SETGATE(idt[i], type, GD_KT, handlers[i], dpl);
 	//真不知道他们怎么知道DEBUG的DPL又应该是3.
-	SETGATE(idt[T_BRKPT], 1, GD_KT, handlers[T_BRKPT], 3);
-	SETGATE(idt[T_SYSCALL], 1, GD_KT, handlers[T_SYSCALL], 3);
+	//istrap也应该为0. trap()处理过程中, 屏蔽kernel中intr可屏蔽中断
+	//how to know...
+	SETGATE(idt[T_BRKPT], 0, GD_KT, handlers[T_BRKPT], 3);
+	SETGATE(idt[T_SYSCALL], 0, GD_KT, handlers[T_SYSCALL], 3);
 	// Per-CPU setup 
 	trap_init_percpu();
 }
@@ -201,6 +203,11 @@ trap_dispatch(struct Trapframe *tf)
 				tf->tf_regs.reg_edi,
 				tf->tf_regs.reg_esi);
 		tf->tf_regs.reg_eax = retval;
+		return;
+	}
+	if (tf->tf_trapno == IRQ_OFFSET + IRQ_TIMER){
+		lapic_eoi();
+		sched_yield();
 		return;
 	}
 

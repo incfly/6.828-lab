@@ -83,6 +83,7 @@ sched_halt(void)
 	// Release the big kernel lock as if we were "leaving" the kernel
 	unlock_kernel();
 
+
 	// Reset stack pointer, enable interrupts and then halt.
 	// 就是因为下面这儿把interrupt enable了，导致后来timer interrupt
 	// unhandled,出问题。2011版的没有sched_halt(),而是一个idle进程，似乎

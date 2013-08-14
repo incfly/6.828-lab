@@ -268,6 +268,10 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
 
 	// Enable interrupts while in user mode.
 	// LAB 4: Your code here.
+	// 所以其实以前在user mode下，timer interrupt等device都是disable的。
+	// 同时,trap_init()中，idt[i]都是interrupt gate，所以kernel mode下也是
+	// disabled. 一直都没有timer interrupt.(除了sched_halt()那个家伙...)
+	e->env_tf.tf_eflags |= FL_IF;
 
 	// Clear the page fault handler until user installs one.
 	e->env_pgfault_upcall = 0;
