@@ -1,0 +1,17 @@
+This is my code work for lab in MIT 6.828 course. 
+(http://pdos.csail.mit.edu/6.828/2012/).
+
+Gain a lot(including some painful debuging experience). What if I know this 
+earlier! Thanks the designers of MIT 6.828.
+
+Up to now(2013/08/15), I've finished and passed test for Lab1 ~ Lab4.
+
+For current status, 
+
+Branch master:
+as same as branch lab4. Useless, just add it as convention.
+
+Branch LabX:
+for x = 1~4, complete and finished.
+for x = 5, created, merged with lab4's implementation.
+for x = 6, just created from origin/lab6, no merging.(as lab5 is not done).
