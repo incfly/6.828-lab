@@ -55,7 +55,7 @@ sched_yield(void)
 void
 sched_halt(void)
 {
-	cprintf("fall into sched_halt(), cpuid %d\n", cpunum());
+	//cprintf("fall into sched_halt(), cpuid %d\n", cpunum());
 	int i;
 
 	// For debugging and testing purposes, if there are no runnable

@@ -186,51 +186,46 @@ trap_dispatch(struct Trapframe *tf)
 {
 	// Handle processor exceptions.
 	// LAB 3: Your code here.
-	if (tf->tf_trapno == T_PGFLT){
-		page_fault_handler(tf);
-		return;
-	}
-	if (tf->tf_trapno == T_BRKPT){
-		monitor(tf);
-		return;
-	}
-	if (tf->tf_trapno == T_SYSCALL){
-		int retval= 
-			syscall(tf->tf_regs.reg_eax, 
-				tf->tf_regs.reg_edx,
-				tf->tf_regs.reg_ecx,
-				tf->tf_regs.reg_ebx,
-				tf->tf_regs.reg_edi,
-				tf->tf_regs.reg_esi);
-		tf->tf_regs.reg_eax = retval;
-		return;
-	}
-	if (tf->tf_trapno == IRQ_OFFSET + IRQ_TIMER){
-		lapic_eoi();
-		sched_yield();
-		return;
-	}
-
-	// Handle spurious interrupts
-	// The hardware sometimes raises these because of noise on the
-	// IRQ line or other reasons. We don't care.
-	if (tf->tf_trapno == IRQ_OFFSET + IRQ_SPURIOUS) {
-		cprintf("Spurious interrupt on irq 7\n");
-		print_trapframe(tf);
-		return;
-	}
-
-	// Handle clock interrupts. Don't forget to acknowledge the
-	// interrupt using lapic_eoi() before calling the scheduler!
-	// LAB 4: Your code here.
-
-	// Unexpected trap: The user process or the kernel has a bug.
-	print_trapframe(tf);
-	if (tf->tf_cs == GD_KT)
-		panic("unhandled trap in kernel");
-	else {
-		env_destroy(curenv);
-		return;
+	int retval = 0;
+	switch(tf->tf_trapno){
+		case T_PGFLT:
+			page_fault_handler(tf);
+			return;
+		case T_BRKPT:
+			monitor(tf);
+			return;
+		case T_SYSCALL:
+			retval= syscall(tf->tf_regs.reg_eax,
+						tf->tf_regs.reg_edx,
+						tf->tf_regs.reg_ecx,
+						tf->tf_regs.reg_ebx,
+						tf->tf_regs.reg_edi,
+						tf->tf_regs.reg_esi);
+			tf->tf_regs.reg_eax = retval;
+			return;
+			// Handle clock interrupts. Don't forget to acknowledge the
+			// interrupt using lapic_eoi() before calling the scheduler!
+			// LAB 4: Your code here.
+		case IRQ_OFFSET + IRQ_TIMER:
+			lapic_eoi();
+			sched_yield();
+			return;
+			// Handle spurious interrupts
+			// The hardware sometimes raises these because of noise on the
+			// IRQ line or other reasons. We don't care.
+		case IRQ_OFFSET + IRQ_SPURIOUS:
+			cprintf("Spurious interrupt on irq 7\n");
+			print_trapframe(tf);
+			return;
+			// Unexpected trap: The user process or the kernel has a bug.
+		default:
+			print_trapframe(tf);
+			if (tf->tf_cs == GD_KT)
+				panic("unhandled trap in kernel");
+			else {
+				env_destroy(curenv);
+				return;
+			}
 	}
 }
 
@@ -366,7 +361,7 @@ page_fault_handler(struct Trapframe *tf)
 
 	//UXSTACKTOP栈的建立是由user program负责,用sys_page_map()等syscall
 	if (tf->tf_esp < UXSTACKTOP && tf->tf_esp >= UXSTACKTOP - PGSIZE)
-	//recursive page fault, push empty 32-bit word, leaving for ret addr
+		//recursive page fault, push empty 32-bit word, leaving for ret addr
 		ufp = tf->tf_esp - sizeof(struct UTrapframe) -4;
 	else
 		ufp = UXSTACKTOP - sizeof(struct UTrapframe);
@@ -426,7 +421,7 @@ page_fault_handler_hjf(struct Trapframe *tf)
 	//后，会不会stack overflow, 如是则UXSTACK空间不够，则退出environment.
 	//注意stack的增长方向: 地址是高 -> 低
 	if (tf->tf_esp < UXSTACKTOP && tf->tf_esp >= UXSTACKTOP - PGSIZE &&
-		(tf->tf_esp - sizeof(struct UTrapframe) -  4) < UXSTACKTOP - PGSIZE){
+			(tf->tf_esp - sizeof(struct UTrapframe) -  4) < UXSTACKTOP - PGSIZE){
 		print_trapframe(tf);
 		env_destroy(curenv);
 		return;

@@ -291,6 +291,8 @@ sys_page_unmap(envid_t envid, void *va)
 // If srcva < UTOP, then also send page currently mapped at 'srcva',
 // so that receiver gets a duplicate mapping of the same page.
 //
+// 如果srcva >= UTOP，就只传递value, 而不repmap page, 而不是错误。
+//
 // The send fails with a return value of -E_IPC_NOT_RECV if the
 // target is not blocked, waiting for an IPC.
 //
@@ -309,6 +311,8 @@ sys_page_unmap(envid_t envid, void *va)
 // If the sender wants to send a page but the receiver isn't asking for one,
 // then no page mapping is transferred, but no error occurs.
 // The ipc only happens when no errors occur.
+//
+// reciever是否需要page，是通过env->env_ipc_dstva的值来判断的
 //
 // Returns 0 on success, < 0 on error.
 // Errors are:
@@ -329,7 +333,47 @@ static int
 sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 {
 	// LAB 4: Your code here.
-	panic("sys_ipc_try_send not implemented");
+	struct Env *de;
+	pte_t *ptep;
+
+	if (envid2env(envid, &de, 0) < 0)
+		return -E_BAD_ENV;
+	// 不应出现:env_status != ENV_NOT_RUNNABLE, && env_ipc_receving为true的情况
+	// 开始由于env_run()中对进程状态修改的条件没写对，导致下面的test为true。从而有可能
+	// receiver在sender把信息发送之前就处于RUNNABLE状态，若scheduler先调度receiver, 
+	// receiver就没有收到信息。
+	if (de->env_status != ENV_NOT_RUNNABLE && de->env_ipc_recving)
+		panic("[%x]'s(ptr %p) env status: %x\n", de->env_id, de, de->env_status);
+	if (!de->env_ipc_recving)
+		return -E_IPC_NOT_RECV;
+	// 如果srcva >= UTOP，就只传递value, 而不repmap page, 而不是错误。
+	if ((uint32_t)srcva < UTOP){
+		if ((uint32_t)srcva % PGSIZE)
+			return -E_INVAL;
+		if (!((perm & PTE_U) && (perm & PTE_P)))
+			return -E_INVAL;
+		int pcheck = ~(PTE_U | PTE_P | PTE_W | PTE_AVAIL);
+		if (perm & pcheck)
+			return -E_INVAL;
+		if (!page_lookup(curenv->env_pgdir, srcva, &ptep))
+			return -E_INVAL;
+		if ((perm & PTE_W) && (*ptep & PTE_W) == 0)
+			return -E_INVAL;
+		// dstva < UTOP时，receiver才接受page mapping
+		if ((uint32_t)de->env_ipc_dstva < UTOP){
+			//很多check在ipc_try_send和sys_page_map之间是重复的.这也是为什么
+			//sys_page_map()出错了基本上就是-E_NO_MEM. 相同的检查上面都通过了
+			if (sys_page_map(0, srcva, envid, de->env_ipc_dstva, perm) < 0)
+				return -E_NO_MEM;
+		}
+	}
+	de->env_ipc_recving = false;
+	de->env_ipc_value = value;
+	de->env_ipc_from = curenv->env_id;
+	de->env_ipc_perm =  ((uint32_t)srcva < UTOP && 
+			(uint32_t) de->env_ipc_dstva < UTOP) ? perm : 0;
+	de->env_status = ENV_RUNNABLE;
+	return 0;
 }
 
 // Block until a value is ready.  Record that you want to receive
@@ -346,8 +390,19 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 static int
 sys_ipc_recv(void *dstva)
 {
+	//cprintf("entering sys_ipc_recv()\n");
 	// LAB 4: Your code here.
-	panic("sys_ipc_recv not implemented");
+	if ((uint32_t)dstva < UTOP && (uint32_t)dstva % PGSIZE){
+		panic("wrong dstva in sys_ipc_recv()\n");
+		return -E_INVAL;
+	}
+	//不管是否receiver intend接受page，都赋值dstva,让sender根据dstva判断
+	//receiver是否要接受page mapping.
+	curenv->env_ipc_dstva = dstva;
+	curenv->env_ipc_recving = true;
+	curenv->env_status = ENV_NOT_RUNNABLE;
+	curenv->env_tf.tf_regs.reg_eax = 0;
+	sched_yield();
 	return 0;
 }
 
@@ -395,9 +450,16 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 		case SYS_env_set_pgfault_upcall:
 			retval = sys_env_set_pgfault_upcall(a1, (void *)a2);
 			break;
+		case SYS_ipc_recv:
+			retval = sys_ipc_recv((void *)a1);
+			break;
+		case SYS_ipc_try_send:
+			retval = sys_ipc_try_send(a1, a2, (void *)a3, a4);
+			break;
 		default:
 			return -E_INVAL; 
 	}
+	//cprintf("syscall, number %d, retval %d\n", syscallno, retval);
 	return retval;
 }
 

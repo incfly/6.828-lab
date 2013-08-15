@@ -559,7 +559,13 @@ env_run(struct Env *e)
 
 	// LAB 3: Your code here.
 	if (curenv != e){
-		if (curenv)
+		// 之前的条件是: if (curenv), 缺少对curenv->env_status的检查的结果是
+		// 可能将处于block状态的进程（env_status为ENV_NOT_RUNNABLE)状态改为
+		// ENV_RUNNABLE. sys_ipc_recv()中就因此有问题： sys_ipc_recv()
+		// -> sched_yield() -> env_run(), 所以本来在sys_ipc_recv()置为
+		// NOT_RUNNABLE的进程在这儿又改成ENV_RUNNABLE了。所以下一次甚至可能将
+		// receiving process在sender发送信息之前就调度执行。
+		if (curenv && curenv->env_status == ENV_RUNNING)
 			curenv->env_status = ENV_RUNNABLE;
 		curenv = e;
 		curenv->env_cpunum = cpunum();
