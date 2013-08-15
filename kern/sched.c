@@ -11,6 +11,7 @@ void sched_halt(void);
 void
 sched_yield(void)
 {
+//	cprintf("cpu %d entering sched_yield()\n", cpunum());
 	struct Env *idle;
 
 	// Implement simple round-robin scheduling.
@@ -29,7 +30,21 @@ sched_yield(void)
 	// below to halt the cpu.
 
 	// LAB 4: Your code here.
-
+	idle = thiscpu->cpu_env;
+	uint32_t start = (idle != NULL) ? ENVX(idle->env_id) : 0;
+	uint32_t i = start;
+	bool first = true;
+	for ( ; i != start || first; i = (i+1) % NENV, first = false)
+		if (envs[i].env_status == ENV_RUNNABLE){
+			//将curenv设置为ENV_RUNNABLE的工作由env_run()完成
+			//responsibility distributed.
+			env_run(&envs[i]);
+			return;
+		}
+	if (idle && idle->env_status == ENV_RUNNING){
+		env_run(idle);
+		return;
+	}
 	// sched_halt never returns
 	sched_halt();
 }
@@ -40,6 +55,7 @@ sched_yield(void)
 void
 sched_halt(void)
 {
+	//cprintf("fall into sched_halt(), cpuid %d\n", cpunum());
 	int i;
 
 	// For debugging and testing purposes, if there are no runnable
@@ -68,7 +84,12 @@ sched_halt(void)
 	// Release the big kernel lock as if we were "leaving" the kernel
 	unlock_kernel();
 
+
 	// Reset stack pointer, enable interrupts and then halt.
+	// 就是因为下面这儿把interrupt enable了，导致后来timer interrupt
+	// unhandled,出问题。2011版的没有sched_halt(),而是一个idle进程，似乎
+	// 没有这个问题。暂时性解决：屏蔽这句，然后在上面写一个for(;;);的
+	// 无限循环
 	asm volatile (
 		"movl $0, %%ebp\n"
 		"movl %0, %%esp\n"

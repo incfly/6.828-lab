@@ -19,12 +19,24 @@
 //   If 'pg' is null, pass sys_ipc_recv a value that it will understand
 //   as meaning "no page".  (Zero is not the right value, since that's
 //   a perfectly valid place to map a page.)
+//   意思就是应该对sys_ipc_recv()中的dstva参数，用一个>= UTOP的值
+
+#define NO_PAGE_MAP (UTOP+1)
+
 int32_t
 ipc_recv(envid_t *from_env_store, void *pg, int *perm_store)
 {
 	// LAB 4: Your code here.
-	panic("ipc_recv not implemented");
-	return 0;
+	void *dstva = pg ? pg : (void *)NO_PAGE_MAP;
+	int r;
+	r = sys_ipc_recv(dstva);
+	if (from_env_store)
+		*from_env_store = r == 0? thisenv->env_ipc_from : 0;
+	if (perm_store)
+		*perm_store = r == 0 ? thisenv->env_ipc_perm : 0;
+	if (r != 0)
+		panic("sys_ipc_recv() failed in ipc_recv\n");
+	return r == 0 ? thisenv->env_ipc_value : r;
 }
 
 // Send 'val' (and 'pg' with 'perm', if 'pg' is nonnull) to 'toenv'.
@@ -39,7 +51,16 @@ void
 ipc_send(envid_t to_env, uint32_t val, void *pg, int perm)
 {
 	// LAB 4: Your code here.
-	panic("ipc_send not implemented");
+	int r;
+	void *va = pg ? pg : (void *)NO_PAGE_MAP;
+	while(1){
+		r = sys_ipc_try_send(to_env, val, va, perm);
+		if (r == 0)
+			break;
+		if (r != -E_IPC_NOT_RECV)
+			panic("ipc_send() -> sys_ipc_try_send(): %e\n", r);
+	}
+	sys_yield();
 }
 
 // Find the first environment of the given type.  We'll use this to

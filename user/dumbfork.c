@@ -28,6 +28,12 @@ duppage(envid_t dstenv, void *addr)
 	int r;
 
 	// This is NOT what you should do in your fork.
+	// 这个实现太trick了：
+	// 先在dstenv的addr上分配一页，然后将dstenv的addr所在的页面映射到
+	// 当前进程的UTEMP位置，最后将current的addr的内容copy到current的
+	// UTEMP, 因为经过sys_page_map()之后，current TEMP和dstenv的addr
+	// 指向同一实际物理页面，这样就实现了把current'addr -> dstenv's addr
+	// 的功能。最后还要对current's UTEMP进行umap。
 	if ((r = sys_page_alloc(dstenv, addr, PTE_P|PTE_U|PTE_W)) < 0)
 		panic("sys_page_alloc: %e", r);
 	if ((r = sys_page_map(dstenv, addr, 0, UTEMP, PTE_P|PTE_U|PTE_W)) < 0)

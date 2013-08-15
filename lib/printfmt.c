@@ -55,6 +55,8 @@ printnum(void (*putch)(int, void*), void *putdat,
 	}
 
 	// then print this (the least significant) digit
+	// bluesea
+	// 这个做法相当巧妙！
 	putch("0123456789abcdef"[num % base], putdat);
 }
 
@@ -215,9 +217,10 @@ vprintfmt(void (*putch)(int, void*), void *putdat, const char *fmt, va_list ap)
 		// (unsigned) octal
 		case 'o':
 			// Replace this with your code.
-			putch('X', putdat);
-			putch('X', putdat);
-			putch('X', putdat);
+			// bluesea
+			num = getuint(&ap, lflag);
+			base = 8;
+			goto number;
 			break;
 
 		// pointer
@@ -233,6 +236,9 @@ vprintfmt(void (*putch)(int, void*), void *putdat, const char *fmt, va_list ap)
 		case 'x':
 			num = getuint(&ap, lflag);
 			base = 16;
+
+		//bluesea
+		//用printnum封装不同进制下的打印
 		number:
 			printnum(putch, putdat, num, base, width, padc);
 			break;

@@ -114,17 +114,28 @@ envid2env(envid_t envid, struct Env **env_store, bool checkperm)
 // they are in the envs array (i.e., so that the first call to
 // env_alloc() returns envs[0]).
 //
+// 初始化后，必须env_free_list 指向envs[0]. 蛋疼的隐喻！
 void
 env_init(void)
 {
 	// Set up envs array
 	// LAB 3: Your code here.
-
+	env_free_list = 0;
+	int i;
+	for (i = NENV - 1 ; i >= 0; i--){
+		envs[i].env_link = env_free_list;
+		envs[i].env_status = ENV_FREE;
+		env_free_list = &envs[i];
+	}
 	// Per-CPU part of the initialization
 	env_init_percpu();
 }
 
 // Load GDT and segment descriptors.
+// Question：为什么要加载segment descriptor?之前的lab也都没有啊。
+// 而且user env下，为什么加载的还是kernel code/data seg?
+// 好像的确是kernel的init，因为每个Env的初始化中(env_alloc())，cs, ds等寄存器
+// 被设置成GD_UD|3, GD_UT|3, etc.
 void
 env_init_percpu(void)
 {
@@ -180,13 +191,23 @@ env_setup_vm(struct Env *e)
 	//	is an exception -- you need to increment env_pgdir's
 	//	pp_ref for env_free to work correctly.
 	//    - The functions in kern/pmap.h are handy.
+	//
+	//  之所以要对env_pgdir的pp_ref引用计数记录，我猜是因为不同user
+	//  environment会公用env_pgdir? 不然进程结束就可以free_page(env_pgdir)了
 
 	// LAB 3: Your code here.
+	p->pp_ref++;
+	//直接复制kern_pgdir UTOP以上部分的page directory entry即可
+	e->env_pgdir = page2kva(p);
+	//坑！！！这儿写成了i < PGSIZE，导致第二个envs[1]的page directory
+	//初始化时会overwrite envs[0]的页目录, 这个bug找了好久...
+	//for (i = PDX(UTOP); i < PGSIZE; i++)
+	for (i = PDX(UTOP); i < NPDENTRIES; i++)
+		e->env_pgdir[i] = kern_pgdir[i];
 
 	// UVPT maps the env's own page table read-only.
 	// Permissions: kernel R, user R
 	e->env_pgdir[PDX(UVPT)] = PADDR(e->env_pgdir) | PTE_P | PTE_U;
-
 	return 0;
 }
 
@@ -247,6 +268,10 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
 
 	// Enable interrupts while in user mode.
 	// LAB 4: Your code here.
+	// 所以其实以前在user mode下，timer interrupt等device都是disable的。
+	// 同时,trap_init()中，idt[i]都是interrupt gate，所以kernel mode下也是
+	// disabled. 一直都没有timer interrupt.(除了sched_halt()那个家伙...)
+	e->env_tf.tf_eflags |= FL_IF;
 
 	// Clear the page fault handler until user installs one.
 	e->env_pgfault_upcall = 0;
@@ -279,6 +304,15 @@ region_alloc(struct Env *e, void *va, size_t len)
 	//   'va' and 'len' values that are not page-aligned.
 	//   You should round va down, and round (va + len) up.
 	//   (Watch out for corner-cases!)
+	uint32_t begin = ROUNDDOWN((uint32_t)va, PGSIZE);
+	uint32_t end = ROUNDUP((uint32_t)va + len, PGSIZE), i;
+	struct PageInfo *p;
+	for ( i = begin; i < end; i++){
+		if (!(p = page_alloc(0)))
+			panic("page_alloc() fail in region_alloc()");
+		page_insert(e->env_pgdir, p, (void *) i, PTE_U|PTE_W);
+	}
+
 }
 
 //
@@ -335,11 +369,31 @@ load_icode(struct Env *e, uint8_t *binary, size_t size)
 	//  What?  (See env_run() and env_pop_tf() below.)
 
 	// LAB 3: Your code here.
+	lcr3(PADDR(e->env_pgdir));
+
+	struct Elf *elfhd = (struct Elf*)binary;
+	struct Proghdr *ph, *endph;
+	ph = (struct Proghdr *) (elfhd->e_phoff + binary);
+	endph = ph + elfhd->e_phnum;
+	char *start, *content;
+
+	e->env_tf.tf_eip = elfhd->e_entry;
+
+	// 如果.bss section, 那么只有ALLOC，没有LOAD(objdump -h obj/user/* 发现的)
+	for ( ; ph < endph; ph++){
+		//allocate and map, region_alloc() should work under env's pgidr.
+		//as mapping above UTOP(=UENV) are all the same for different process.
+		region_alloc(e, (void *)ph->p_va, ph->p_memsz);
+		memmove((void *)ph->p_va, (char *)binary + ph->p_offset, ph->p_filesz);
+		memset((void *)(ph->p_va + ph->p_filesz), 0, ph->p_memsz - ph->p_filesz);
+	}
+	lcr3(PADDR(kern_pgdir));
 
 	// Now map one page for the program's initial stack
 	// at virtual address USTACKTOP - PGSIZE.
 
 	// LAB 3: Your code here.
+	region_alloc(e, (void *)(USTACKTOP - PGSIZE), PGSIZE);
 }
 
 //
@@ -348,7 +402,19 @@ load_icode(struct Env *e, uint8_t *binary, size_t size)
 // This function is ONLY called during kernel initialization,
 // before running the first user-mode environment.
 // The new env's parent ID is set to 0.
+// 蛋疼的隐喻：
+// 该函数只会在内核初始化的时候，唯一一次被调用。
+// kern/init.c中的env_run(&env[0])可以发现, 内核默认隐喻：第一个
+// 分配的env为env[0]. 这样它才能什么都不管，直接对&envs[0]进行
+// 调用运行。同时这也解释了，env_create()为什么不需要返回创建的
+// env指针。因为它必须创建进程必须存储在envs[0]。
+// 这样就要求：env_alloc()第一次调用必须返回envs[0].
+// 进一步：对env_init()时候的free_list有Specification。
 //
+// 这种隐喻，对函数调用结果的隐形specification, 是bug增加，和
+// 模块化设计的敌人！！！ 而这种隐喻在内核里面到处都是。。。
+//
+// 好像怎么interpret data, 影响程序的语义，但这个也是隐喻吗？
 void
 env_create(uint8_t *binary, size_t size, enum EnvType type)
 {
@@ -356,6 +422,14 @@ env_create(uint8_t *binary, size_t size, enum EnvType type)
 
 	// If this is the file server (type == ENV_TYPE_FS) give it I/O privileges.
 	// LAB 5: Your code here.
+	//
+	struct Env *newenv;
+	int err = -1 * env_alloc(&newenv, 0);
+	if (err != 0)
+		panic("fail to call env_alloc() in env_create(): %e", err);
+	newenv->env_parent_id = 0;
+	newenv->env_type = type;
+	load_icode(newenv, binary, size);
 }
 
 //
@@ -442,6 +516,9 @@ env_destroy(struct Env *e)
 //
 // This function does not return.
 //
+//这个略显高端：从kernel mode， iret到user mode. 直接把指针指向env->trapframe
+//这样就不需要在切换进程的时候，对kernel stack做手脚(虽然env下，每个时刻
+//只有一个进程，共用一个kernel stack, 但少点干扰还是好的)
 void
 env_pop_tf(struct Trapframe *tf)
 {
@@ -485,7 +562,26 @@ env_run(struct Env *e)
 	//	e->env_tf to sensible values.
 
 	// LAB 3: Your code here.
-
+	if (curenv != e){
+		// 之前的条件是: if (curenv), 缺少对curenv->env_status的检查的结果是
+		// 可能将处于block状态的进程（env_status为ENV_NOT_RUNNABLE)状态改为
+		// ENV_RUNNABLE. sys_ipc_recv()中就因此有问题： sys_ipc_recv()
+		// -> sched_yield() -> env_run(), 所以本来在sys_ipc_recv()置为
+		// NOT_RUNNABLE的进程在这儿又改成ENV_RUNNABLE了。所以下一次甚至可能将
+		// receiving process在sender发送信息之前就调度执行。
+		if (curenv && curenv->env_status == ENV_RUNNING)
+			curenv->env_status = ENV_RUNNABLE;
+		curenv = e;
+		curenv->env_cpunum = cpunum();
+		curenv->env_status = ENV_RUNNING;
+		curenv->env_runs++;
+		lcr3(PADDR(curenv->env_pgdir));
+	}
+	//cprintf("entry eip: %x\n", curenv->env_tf.tf_eip);
+	//这儿挂了！！！！可能是trapframe的问题，也有可能是load, mapping的问题~
+	//cprintf("in env_run-------------env id: %d, cpuid %d\n", ENVX(e->env_id), thiscpu->cpu_id);
+	unlock_kernel();
+	env_pop_tf(&curenv->env_tf);
 	panic("env_run not yet implemented");
 }
 

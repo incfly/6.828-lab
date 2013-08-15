@@ -65,6 +65,7 @@ static const char *trapname(int trapno)
 	return "(unknown trap)";
 }
 
+extern long handlers[17];
 
 void
 trap_init(void)
@@ -72,7 +73,15 @@ trap_init(void)
 	extern struct Segdesc gdt[];
 
 	// LAB 3: Your code here.
-
+	// 为什么DPL = 0? 比如page fault, 发生在kernel/user mode都有可能
+	int dpl = 0, type = 0, i;
+	for (i = 0; i <= 48; i++)
+		SETGATE(idt[i], type, GD_KT, handlers[i], dpl);
+	//真不知道他们怎么知道DEBUG的DPL又应该是3.
+	//istrap也应该为0. trap()处理过程中, 屏蔽kernel中intr可屏蔽中断
+	//how to know...
+	SETGATE(idt[T_BRKPT], 0, GD_KT, handlers[T_BRKPT], 3);
+	SETGATE(idt[T_SYSCALL], 0, GD_KT, handlers[T_SYSCALL], 3);
 	// Per-CPU setup 
 	trap_init_percpu();
 }
@@ -103,22 +112,26 @@ trap_init_percpu(void)
 	// user space on that CPU.
 	//
 	// LAB 4: Your code here:
+	uint32_t i = thiscpu->cpu_id;
+	thiscpu->cpu_ts.ts_esp0 = KSTACKTOP - i * (KSTKSIZE + KSTKGAP);
+	thiscpu->cpu_ts.ts_ss0 = GD_KD;
 
-	// Setup a TSS so that we get the right stack
-	// when we trap to the kernel.
-	ts.ts_esp0 = KSTACKTOP;
-	ts.ts_ss0 = GD_KD;
+	//gdt, >> 3的原因是，每个gdt的表项是8字节
+	//GD_KT     0x08     // kernel text
+	//GD_KD     0x10     // kernel data
+	//GD_UT     0x18     // user text
+	//GD_UD     0x20     // user data
+	//GD_TSS0   0x28     // Task segment selector for CPU 0
+	//注意0x28，是16进制！
+	//结合gdt[ ] 的定义，GD_TSS0接下来的位置就是存放cpui的GD_TSS
 
-	// Initialize the TSS slot of the gdt.
-	gdt[GD_TSS0 >> 3] = SEG16(STS_T32A, (uint32_t) (&ts),
-					sizeof(struct Taskstate), 0);
-	gdt[GD_TSS0 >> 3].sd_s = 0;
-
-	// Load the TSS selector (like other segment selectors, the
-	// bottom three bits are special; we leave them 0)
-	ltr(GD_TSS0);
-
-	// Load the IDT
+	gdt[(GD_TSS0 >> 3) + i] = SEG16(STS_T32A, (uint32_t)&thiscpu->cpu_ts,
+						sizeof(struct Taskstate), 0);
+	gdt[(GD_TSS0 >> 3) + i].sd_s = 0;
+	//ltr(GD_TSS0 + i * sizeof(struct Segdesc));
+	//和下面一句是等效的，sizeof(struct Segdesc)就等于8.
+	//(Segdesc里的unsigned 是unsigned char，1个字节)
+	ltr(GD_TSS0 + (i << 3) );
 	lidt(&idt_pd);
 }
 
@@ -174,15 +187,6 @@ trap_dispatch(struct Trapframe *tf)
 	// Handle processor exceptions.
 	// LAB 3: Your code here.
 
-	// Handle spurious interrupts
-	// The hardware sometimes raises these because of noise on the
-	// IRQ line or other reasons. We don't care.
-	if (tf->tf_trapno == IRQ_OFFSET + IRQ_SPURIOUS) {
-		cprintf("Spurious interrupt on irq 7\n");
-		print_trapframe(tf);
-		return;
-	}
-
 	// Handle clock interrupts. Don't forget to acknowledge the
 	// interrupt using lapic_eoi() before calling the scheduler!
 	// LAB 4: Your code here.
@@ -190,13 +194,47 @@ trap_dispatch(struct Trapframe *tf)
 	// Handle keyboard and serial interrupts.
 	// LAB 5: Your code here.
 
-	// Unexpected trap: The user process or the kernel has a bug.
-	print_trapframe(tf);
-	if (tf->tf_cs == GD_KT)
-		panic("unhandled trap in kernel");
-	else {
-		env_destroy(curenv);
-		return;
+
+	int retval = 0;
+	switch(tf->tf_trapno){
+		case T_PGFLT:
+			page_fault_handler(tf);
+			return;
+		case T_BRKPT:
+			monitor(tf);
+			return;
+		case T_SYSCALL:
+			retval= syscall(tf->tf_regs.reg_eax,
+						tf->tf_regs.reg_edx,
+						tf->tf_regs.reg_ecx,
+						tf->tf_regs.reg_ebx,
+						tf->tf_regs.reg_edi,
+						tf->tf_regs.reg_esi);
+			tf->tf_regs.reg_eax = retval;
+			return;
+			// Handle clock interrupts. Don't forget to acknowledge the
+			// interrupt using lapic_eoi() before calling the scheduler!
+			// LAB 4: Your code here.
+		case IRQ_OFFSET + IRQ_TIMER:
+			lapic_eoi();
+			sched_yield();
+			return;
+			// Handle spurious interrupts
+			// The hardware sometimes raises these because of noise on the
+			// IRQ line or other reasons. We don't care.
+		case IRQ_OFFSET + IRQ_SPURIOUS:
+			cprintf("Spurious interrupt on irq 7\n");
+			print_trapframe(tf);
+			return;
+			// Unexpected trap: The user process or the kernel has a bug.
+		default:
+			print_trapframe(tf);
+			if (tf->tf_cs == GD_KT)
+				panic("unhandled trap in kernel");
+			else {
+				env_destroy(curenv);
+				return;
+			}
 	}
 }
 
@@ -216,6 +254,7 @@ trap(struct Trapframe *tf)
 	// sched_yield()
 	if (xchg(&thiscpu->cpu_status, CPU_STARTED) == CPU_HALTED)
 		lock_kernel();
+
 	// Check that interrupts are disabled.  If this assertion
 	// fails, DO NOT be tempted to fix it by inserting a "cli" in
 	// the interrupt path.
@@ -226,6 +265,7 @@ trap(struct Trapframe *tf)
 		// Acquire the big kernel lock before doing any
 		// serious kernel work.
 		// LAB 4: Your code here.
+		lock_kernel();
 		assert(curenv);
 
 		// Garbage collect if current enviroment is a zombie
@@ -271,6 +311,8 @@ page_fault_handler(struct Trapframe *tf)
 	// Handle kernel-mode page faults.
 
 	// LAB 3: Your code here.
+	if ((tf->tf_cs & 3) != 3)
+		panic("page fault occur in kernel.");
 
 	// We've already handled kernel-mode exceptions, so if we get here,
 	// the page fault happened in user mode.
@@ -297,6 +339,11 @@ page_fault_handler(struct Trapframe *tf)
 	// Note that the grade script assumes you will first check for the page
 	// fault upcall and print the "user fault va" message below if there is
 	// none.  The remaining three checks can be combined into a single test.
+	/*
+	 * 太傻逼了。。就是因为最后的这个要求，我自己写的等价的代码不能通过test。
+	 * 但效果是一样的。为了追求满分，把代码做了相应调整。。。原来的代码放在
+	 * 下面的page_fault_handler_hjf(). */
+
 	//
 	// Hints:
 	//   user_mem_assert() and env_run() are useful here.
@@ -304,11 +351,109 @@ page_fault_handler(struct Trapframe *tf)
 	//   (the 'tf' variable points at 'curenv->env_tf').
 
 	// LAB 4: Your code here.
+	// 这里面说的trap-time指的都是发生page fault的时候，而不是说进入pg fault
+	// handler之后的状态
 
-	// Destroy the environment that caused the fault.
-	cprintf("[%08x] user fault va %08x ip %08x\n",
-		curenv->env_id, fault_va, tf->tf_eip);
-	print_trapframe(tf);
-	env_destroy(curenv);
+	assert(curenv);
+	struct UTrapframe uframe;
+	uintptr_t ufp;
+	bool bad_case = false;
+
+	//env_alloc()中,初始化env_pgfault_upcall为0
+	if (!curenv->env_pgfault_upcall){
+		bad_case = true;
+		cprintf("[%08x] user fault va %08x ip %08x\n",
+				curenv->env_id, fault_va, tf->tf_eip);
+		print_trapframe(tf);
+		env_destroy(curenv);
+	}
+
+	//UXSTACKTOP栈的建立是由user program负责,用sys_page_map()等syscall
+	if (tf->tf_esp < UXSTACKTOP && tf->tf_esp >= UXSTACKTOP - PGSIZE)
+		//recursive page fault, push empty 32-bit word, leaving for ret addr
+		ufp = tf->tf_esp - sizeof(struct UTrapframe) -4;
+	else
+		ufp = UXSTACKTOP - sizeof(struct UTrapframe);
+	user_mem_assert(curenv, (void *)ufp, sizeof(struct UTrapframe), PTE_W);
+
+	//设置uframe的值. 注意curenv->tf在kernel stack上，uframe将要在UXSTACK上
+	uframe.utf_eflags = tf->tf_eflags;
+	uframe.utf_eip = tf->tf_eip;
+	uframe.utf_err = tf->tf_err;
+	uframe.utf_esp = tf->tf_esp;
+	uframe.utf_regs = tf->tf_regs;
+	uframe.utf_fault_va = fault_va;
+
+	*((struct UTrapframe *)ufp) = uframe;
+	tf->tf_eip = (uintptr_t) curenv->env_pgfault_upcall;
+	tf->tf_esp = ufp;
+	env_run(curenv);
+}
+
+
+// 原来的代码，虽然能够完成同样的功能，处理好page_fault(), user mode handler.
+// 但由于处理流程上和标准输出有所出入，于是悲催地放到这儿，被命名为_hjf()...
+void
+page_fault_handler_hjf(struct Trapframe *tf)
+{
+	uint32_t fault_va;
+
+	fault_va = rcr2();
+
+	// Handle kernel-mode page faults.
+
+	// LAB 3: Your code here.
+	if ((tf->tf_cs & 3) != 3)
+		panic("page fault occur in kernel.");
+
+	// LAB 4: Your code here.
+	// 这里面说的trap-time指的都是发生page fault的时候，而不是说进入pg fault
+	// handler之后的状态
+
+	assert(curenv);
+	struct UTrapframe uframe;
+	//env_alloc()中,初始化env_pgfault_upcall为0
+	if (!curenv->env_pgfault_upcall){
+		// Destroy the environment that caused the fault.
+		cprintf("[%08x] user fault va %08x ip %08x\n",
+				curenv->env_id, fault_va, tf->tf_eip);
+		print_trapframe(tf);
+		env_destroy(curenv);
+		return;
+	}
+	//UXSTACKTOP栈的建立是由user program负责,用sys_page_map()等syscall
+	//分配映射,此处之需要检查权限即可
+	user_mem_assert(curenv, (void *)(UXSTACKTOP - PGSIZE), PGSIZE, PTE_W);
+
+	//exception stack下面有一guard page, 所以已经overflow的话，会有protection
+	//exception，无需考虑。关键是:check我们之后如果push UTrapframe + 空余的32放ret addr
+	//后，会不会stack overflow, 如是则UXSTACK空间不够，则退出environment.
+	//注意stack的增长方向: 地址是高 -> 低
+	if (tf->tf_esp < UXSTACKTOP && tf->tf_esp >= UXSTACKTOP - PGSIZE &&
+			(tf->tf_esp - sizeof(struct UTrapframe) -  4) < UXSTACKTOP - PGSIZE){
+		print_trapframe(tf);
+		env_destroy(curenv);
+		return;
+	}
+
+	//设置uframe的值. 注意curenv->tf在kernel stack上，uframe将要在UXSTACK上
+	uframe.utf_eflags = tf->tf_eflags;
+	uframe.utf_eip = tf->tf_eip;
+	uframe.utf_err = tf->tf_err;
+	uframe.utf_esp = tf->tf_esp;
+	uframe.utf_regs = tf->tf_regs;
+	uframe.utf_fault_va = fault_va;
+
+	uintptr_t ufp;
+	//recursive page fault, push empty 32-bit word, leaving for ret addr
+	if (tf->tf_esp < UXSTACKTOP && tf->tf_esp >= UXSTACKTOP - PGSIZE)
+		ufp = (uintptr_t) tf->tf_esp - 4 - sizeof(struct UTrapframe);
+	else 
+		ufp = UXSTACKTOP - sizeof(struct UTrapframe);
+
+	*((struct UTrapframe *)ufp) = uframe;
+	tf->tf_eip = (uintptr_t) curenv->env_pgfault_upcall;
+	tf->tf_esp = ufp;
+	env_run(curenv);
 }
 

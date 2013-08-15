@@ -65,18 +65,38 @@ _pgfault_upcall:
 	// ways as registers become unavailable as scratch space.
 	//
 	// LAB 4: Your code here.
+	// 丫的... 要做的事情写在该注释的第一段:"push trap-time %eip onto 
+	// trap-time stack". 被下面的explanation蒙蔽了. 
+	// 的确是需要现在就把UTrapframe上的eip mov到trap-time栈，因为如果等到
+	// switch to trap-time stack的时候，已无法access当前stack的eip了。
+	// （当然也可以pushal之后再mov %eip, -4(trap_time_stack)
+
+	addl $8, %esp // pop fault_va, error code
+	movl 0x28(%esp), %eax // 0x28(%esp)是trap-time stack
+	subl $4, %eax
+	movl %eax, 0x28(%esp) // -4, 为ret addr给esp增长
+	movl 0x20(%esp), %ebx // 0x20(%esp)是trap-time eip
+	movl %ebx, (%eax)
+
 
 	// Restore the trap-time registers.  After you do this, you
 	// can no longer modify any general-purpose registers.
 	// LAB 4: Your code here.
+	popal
 
 	// Restore eflags from the stack.  After you do this, you can
 	// no longer use arithmetic operations or anything else that
 	// modifies eflags.
 	// LAB 4: Your code here.
+	addl $4, %esp // pop %eip, 这下面才是eflags... 之前忘了这个
+	popf
 
 	// Switch back to the adjusted trap-time stack.
 	// LAB 4: Your code here.
+	// Intel Manual: first increments esp value, then move value in old 
+	// top of stack to esp
+	popl %esp 
 
 	// Return to re-execute the instruction that faulted.
 	// LAB 4: Your code here.
+	ret

@@ -27,10 +27,16 @@ i386_init(void)
 	// Clear the uninitialized global data (BSS) section of our program.
 	// This ensures that all static/global variables start out zero.
 	memset(edata, 0, end - edata);
-
 	// Initialize the console.
 	// Can't call cprintf until after we do this!
 	cons_init();
+
+	//bluesea
+	//经测试，下面的语句会输出:edata f0114300, end f0114970
+	//因此，edata < end, [edata, end)之间是bss段, kernel需要用的global variable.
+	// > end之后的内存可以用于boot_alloc
+	//cprintf("edata %x, end %x\n", edata, end);
+	
 
 	cprintf("6828 decimal is %o octal!\n", 6828);
 
@@ -50,6 +56,7 @@ i386_init(void)
 
 	// Acquire the big kernel lock before waking up APs
 	// Your code here:
+	lock_kernel();
 
 	// Starting non-boot CPUs
 	boot_aps();
@@ -63,6 +70,8 @@ i386_init(void)
 #else
 	// Touch all you want.
 	ENV_CREATE(user_icode, ENV_TYPE_USER);
+	//ENV_CREATE(user_primes, ENV_TYPE_USER);
+	//ENV_CREATE(user_dumbfork, ENV_TYPE_USER);
 #endif // TEST*
 
 	// Should not be necessary - drains keyboard because interrupt has given up.
@@ -123,8 +132,11 @@ mp_main(void)
 	//
 	// Your code here:
 
+	lock_kernel();
+	sched_yield();
+
 	// Remove this after you finish Exercise 4
-	for (;;);
+	//for (;;);
 }
 
 /*
